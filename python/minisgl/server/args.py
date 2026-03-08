@@ -223,6 +223,15 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="Run the server in shell mode.",
     )
 
+    parser.add_argument(
+        "--fp8-keep-quantized",
+        action="store_true",
+        dest="fp8_keep_quantized",
+        help="Keep FP8 weights in quantized format for memory efficiency. "
+        "Requires on-the-fly dequantization during forward pass. "
+        "Useful for running FP8 models on GPUs with limited VRAM.",
+    )
+
     # Parse arguments
     kwargs = parser.parse_args(args).__dict__.copy()
 

@@ -10,13 +10,13 @@ _MODEL_REGISTRY = {
 }
 
 
-def get_model_class(model_architecture: str, model_config: ModelConfig):
+def get_model_class(model_architecture: str, model_config: ModelConfig, use_fp8: bool = False):
     if model_architecture not in _MODEL_REGISTRY:
         raise ValueError(f"Model architecture {model_architecture} not supported")
     module_path, class_name = _MODEL_REGISTRY[model_architecture]
     module = importlib.import_module(module_path, package=__package__)
     model_cls = getattr(module, class_name)
-    return model_cls(model_config)
+    return model_cls(model_config, use_fp8)
 
 
 __all__ = ["get_model_class"]

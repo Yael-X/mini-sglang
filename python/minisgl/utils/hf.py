@@ -26,14 +26,15 @@ def cached_load_hf_config(model_path: str) -> PretrainedConfig:
     return type(config)(**config.to_dict())
 
 
-def download_hf_weight(model_path: str) -> str:
+def download_hf_weight(model_path: str, show_progress: bool = True) -> str:
     if os.path.isdir(model_path):
         return model_path
     try:
+        tqdm_class = DisabledTqdm if not show_progress else tqdm
         return snapshot_download(
             model_path,
             allow_patterns=["*.safetensors"],
-            tqdm_class=DisabledTqdm,
+            tqdm_class=tqdm_class,
         )
     except Exception as e:
         raise ValueError(

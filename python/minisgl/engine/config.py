@@ -29,6 +29,7 @@ class EngineConfig:
     use_pynccl: bool = True
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
+    fp8_keep_quantized: bool = False  # Keep FP8 weights in quantized format for memory efficiency
 
     @cached_property
     def hf_config(self):

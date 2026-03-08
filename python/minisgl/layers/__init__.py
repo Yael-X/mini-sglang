@@ -3,6 +3,11 @@ from .attention import AttentionLayer
 from .base import BaseOP, OPList, StateLessOP
 from .embedding import ParallelLMHead, VocabParallelEmbedding
 from .linear import (
+    Fp8LinearColParallelMerged,
+    Fp8LinearOProj,
+    Fp8LinearQKVMerged,
+    Fp8LinearReplicated,
+    Fp8LinearRowParallel,
     LinearColParallelMerged,
     LinearOProj,
     LinearQKVMerged,
@@ -32,4 +37,10 @@ __all__ = [
     "set_rope_device",
     "LinearReplicated",
     "MoELayer",
+    # FP8 Linear layers
+    "Fp8LinearReplicated",
+    "Fp8LinearColParallelMerged",
+    "Fp8LinearQKVMerged",
+    "Fp8LinearOProj",
+    "Fp8LinearRowParallel",
 ]

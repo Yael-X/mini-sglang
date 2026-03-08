@@ -77,6 +77,20 @@ class BaseOP:
             if name.startswith("_"):
                 continue
 
+            # FP8 weight loading: handle weight_fp8 and weight_scale
+            if name == "weight_fp8" and isinstance(param, torch.Tensor):
+                weight_key = _concat_prefix(prefix, "weight")
+                scale_key = f"{weight_key}_scale_inv"
+
+                if weight_key in state_dict and scale_key in state_dict:
+                    self.weight_fp8 = state_dict.pop(weight_key)
+                    self.weight_scale = state_dict.pop(scale_key)
+                    continue
+
+            # Skip weight_scale when it's part of FP8 (already loaded with weight_fp8)
+            if name == "weight_scale" and "weight_fp8" in self.__dict__:
+                continue
+
             if isinstance(param, torch.Tensor):
                 if "experts" in prefix:
                     mapped_name = name

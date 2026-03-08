@@ -48,7 +48,7 @@ class Engine:
         # ======================= Model initialization ========================
         set_rope_device(self.device)
         with torch.device("meta"), torch_dtype(config.dtype):
-            self.model = create_model(config.model_config)
+            self.model = create_model(config.model_config, use_fp8=config.fp8_keep_quantized)
         self.model.load_state_dict(self._load_weight_state_dict(config))
 
         # ======================= KV cache initialization ========================
@@ -143,9 +143,17 @@ class Engine:
                 for k, v in self.model.state_dict().items()
             }
         else:
-            return {
-                k: v.to(self.dtype) for k, v in load_weight(config.model_path, self.device).items()
-            }
+            # Don't convert FP8 weights to self.dtype - they should stay as FP8
+            result = {}
+            for k, v in load_weight(
+                config.model_path, self.device, config.fp8_keep_quantized
+            ).items():
+                # Keep FP8 weights as-is, convert others to target dtype
+                if v.dtype == torch.float8_e4m3fn:
+                    result[k] = v
+                else:
+                    result[k] = v.to(self.dtype)
+            return result
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
         new_free_memory = self._sync_get_memory()[1]

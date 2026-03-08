@@ -5,6 +5,10 @@ from typing import TYPE_CHECKING
 from minisgl.layers import (
     AttentionLayer,
     BaseOP,
+    Fp8LinearColParallelMerged,
+    Fp8LinearOProj,
+    Fp8LinearQKVMerged,
+    Fp8LinearRowParallel,
     LinearColParallelMerged,
     LinearOProj,
     LinearQKVMerged,
@@ -23,23 +27,38 @@ if TYPE_CHECKING:
 
 
 class GatedMLP(BaseOP):
-    def __init__(self, config: ModelConfig):
-        self.gate_up_proj = LinearColParallelMerged(
-            config.hidden_size,
-            [config.intermediate_size, config.intermediate_size],
-            has_bias=False,
-        )
+    def __init__(self, config: ModelConfig, use_fp8: bool = False):
+        if use_fp8:
+            self.gate_up_proj = Fp8LinearColParallelMerged(
+                config.hidden_size,
+                [config.intermediate_size, config.intermediate_size],
+                has_bias=False,
+            )
+        else:
+            self.gate_up_proj = LinearColParallelMerged(
+                config.hidden_size,
+                [config.intermediate_size, config.intermediate_size],
+                has_bias=False,
+            )
 
         FN_MAP = {"silu": silu_and_mul, "gelu": gelu_and_mul}
         act_fn = FN_MAP.get(config.hidden_act, None)
         if act_fn is None:
             raise ValueError(f"Unsupported activation function: {config.hidden_act}")
         self.act_fn = act_fn
-        self.down_proj = LinearRowParallel(
-            config.intermediate_size,
-            config.hidden_size,
-            has_bias=False,
-        )
+
+        if use_fp8:
+            self.down_proj = Fp8LinearRowParallel(
+                config.intermediate_size,
+                config.hidden_size,
+                has_bias=False,
+            )
+        else:
+            self.down_proj = LinearRowParallel(
+                config.intermediate_size,
+                config.hidden_size,
+                has_bias=False,
+            )
 
     @nvtx_annotate("MLP")
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -86,15 +105,25 @@ class RopeAttn(BaseOP):
         *,
         has_attn_bias: bool = False,
         has_qk_norm: bool = False,
+        use_fp8: bool = False,
     ):
         head_dim = config.head_dim
-        self.qkv_proj = LinearQKVMerged(
-            hidden_size=config.hidden_size,
-            head_dim=config.head_dim,
-            num_qo_heads=config.num_qo_heads,
-            num_kv_heads=config.num_kv_heads,
-            has_bias=has_attn_bias,
-        )
+        if use_fp8:
+            self.qkv_proj = Fp8LinearQKVMerged(
+                hidden_size=config.hidden_size,
+                head_dim=config.head_dim,
+                num_qo_heads=config.num_qo_heads,
+                num_kv_heads=config.num_kv_heads,
+                has_bias=has_attn_bias,
+            )
+        else:
+            self.qkv_proj = LinearQKVMerged(
+                hidden_size=config.hidden_size,
+                head_dim=config.head_dim,
+                num_qo_heads=config.num_qo_heads,
+                num_kv_heads=config.num_kv_heads,
+                has_bias=has_attn_bias,
+            )
         self.has_qk_norm = has_qk_norm
         if has_qk_norm:
             self.q_norm = RMSNorm(head_dim, eps=config.rms_norm_eps)
@@ -111,11 +140,18 @@ class RopeAttn(BaseOP):
             q_norm=self.q_norm,
             k_norm=self.k_norm,
         )
-        self.o_proj = LinearOProj(
-            head_dim * config.num_qo_heads,
-            config.hidden_size,
-            has_bias=False,
-        )
+        if use_fp8:
+            self.o_proj = Fp8LinearOProj(
+                head_dim * config.num_qo_heads,
+                config.hidden_size,
+                has_bias=False,
+            )
+        else:
+            self.o_proj = LinearOProj(
+                head_dim * config.num_qo_heads,
+                config.hidden_size,
+                has_bias=False,
+            )
 
     @nvtx_annotate("MHA")
     def forward(self, x: torch.Tensor) -> torch.Tensor:

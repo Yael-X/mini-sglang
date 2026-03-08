@@ -16,9 +16,9 @@ if TYPE_CHECKING:
 
 
 class Qwen3DecoderLayer(BaseOP):
-    def __init__(self, config: ModelConfig, layer_id: int):
-        self.self_attn = Qwen3Attn(config, layer_id, has_qk_norm=True)
-        self.mlp = Qwen3MLP(config)
+    def __init__(self, config: ModelConfig, layer_id: int, use_fp8: bool = False):
+        self.self_attn = Qwen3Attn(config, layer_id, has_qk_norm=True, use_fp8=use_fp8)
+        self.mlp = Qwen3MLP(config)  # MoE doesn't support FP8 yet
         self.input_layernorm = RMSNormFused(
             size=config.hidden_size,
             eps=config.rms_norm_eps,
@@ -42,13 +42,13 @@ class Qwen3DecoderLayer(BaseOP):
 
 
 class Qwen3Model(BaseOP):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, use_fp8: bool = False):
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
         self.layers = OPList(
-            [Qwen3DecoderLayer(config, layer_id) for layer_id in range(config.num_layers)]
+            [Qwen3DecoderLayer(config, layer_id, use_fp8=use_fp8) for layer_id in range(config.num_layers)]
         )
         self.norm = RMSNormFused(
             size=config.hidden_size,
@@ -64,8 +64,8 @@ class Qwen3Model(BaseOP):
 
 
 class Qwen3MoeForCausalLM(BaseLLMModel):
-    def __init__(self, config: ModelConfig):
-        self.model = Qwen3Model(config)
+    def __init__(self, config: ModelConfig, use_fp8: bool = False):
+        self.model = Qwen3Model(config, use_fp8=use_fp8)
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
