@@ -71,7 +71,7 @@ class _Fp8LinearMixin:
 
         buffer = Fp8DequantBuffer.get_instance(x.device)
         dequant_weight = buffer.get_buffer(
-            (self.weight_fp8.shape[0], self.weight_fp8.shape[1])
+            (self.weight_fp8.shape[0], self.weight_fp8.shape[1]), x.device
         )
         dequantize_fp8_block(self.weight_fp8, self.weight_scale, dequant_weight)
         return F.linear(x, dequant_weight, self.bias)
