@@ -229,6 +229,7 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         dest="fp8_keep_quantized",
         help="Keep FP8 weights in quantized format for memory efficiency. "
         "Requires on-the-fly dequantization during forward pass. "
+        "Only valid for FP8 models; non-FP8 models will be downgraded to dequantized loading. "
         "Useful for running FP8 models on GPUs with limited VRAM.",
     )
 
