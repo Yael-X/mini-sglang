@@ -31,16 +31,48 @@ def dequantize_fp8_block(
     O, I = weight.shape
     bR, bC = block_size
 
-    # Reshape weight to 4D for block-level alignment
-    # [O, I] -> [O//bR, bR, I//bC, bC]
-    w_view = weight.view(O // bR, bR, I // bC, bC).to(torch.bfloat16)
+    main_rows = (O // bR) * bR
+    main_cols = (I // bC) * bC
 
-    # Reshape scale to 4D with dimension-1 insertion for broadcasting
-    # [O//128, I//128] -> [O//bR, 1, I//bC, 1]
-    s_view = scale.view(O // bR, 1, I // bC, 1).to(torch.bfloat16)
+    # Fast path: complete block region using view+broadcast (no extra allocation)
+    if main_rows > 0 and main_cols > 0:
+        row_blocks = main_rows // bR
+        col_blocks = main_cols // bC
+        w_view = weight[:main_rows, :main_cols].view(row_blocks, bR, col_blocks, bC)
+        s_view = scale[:row_blocks, :col_blocks].view(row_blocks, 1, col_blocks, 1)
+        output[:main_rows, :main_cols].view(row_blocks, bR, col_blocks, bC).copy_(
+            w_view.to(torch.bfloat16) * s_view.to(torch.bfloat16)
+        )
 
-    # In-place computation using broadcast multiplication
-    output.view(O // bR, bR, I // bC, bC).copy_(w_view * s_view)
+    # Tail rows: [main_rows:O, :main_cols]
+    if main_rows < O and main_cols > 0:
+        row_scale_idx = main_rows // bR
+        col_blocks = main_cols // bC
+        tail_scale = scale[row_scale_idx : row_scale_idx + 1, :col_blocks].to(torch.bfloat16)
+        tail_scale = tail_scale.repeat_interleave(bC, dim=1)[:, :main_cols]
+        output[main_rows:O, :main_cols].copy_(
+            weight[main_rows:O, :main_cols].to(torch.bfloat16) * tail_scale
+        )
+
+    # Tail cols: [:main_rows, main_cols:I]
+    if main_cols < I and main_rows > 0:
+        col_scale_idx = main_cols // bC
+        row_blocks = main_rows // bR
+        tail_scale = scale[:row_blocks, col_scale_idx : col_scale_idx + 1].to(torch.bfloat16)
+        tail_scale = tail_scale.repeat_interleave(bR, dim=0)[:main_rows]
+        output[:main_rows, main_cols:I].copy_(
+            weight[:main_rows, main_cols:I].to(torch.bfloat16) * tail_scale
+        )
+
+    # Bottom-right tail corner: [main_rows:O, main_cols:I]
+    if main_rows < O and main_cols < I:
+        row_scale_idx = main_rows // bR
+        col_scale_idx = main_cols // bC
+        corner_scale = scale[row_scale_idx : row_scale_idx + 1, col_scale_idx : col_scale_idx + 1]
+        output[main_rows:O, main_cols:I].copy_(
+            weight[main_rows:O, main_cols:I].to(torch.bfloat16)
+            * corner_scale.to(torch.bfloat16)
+        )
 
 
 class Fp8DequantBuffer:

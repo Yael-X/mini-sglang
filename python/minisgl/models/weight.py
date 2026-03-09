@@ -133,8 +133,30 @@ def _shard_fp8_weight(
         return weight[:, start_idx:end_idx]
 
 
+def _get_fp8_shard_bounds(
+    weight_shape: Tuple[int, int], split_dim: int, rank: int, size: int
+) -> Tuple[int, int, int, int]:
+    """Get [row_start,row_end) and [col_start,col_end) shard bounds for one TP rank."""
+    out_features, in_features = weight_shape
+    if split_dim == 0:
+        chunk_size = (out_features + size - 1) // size
+        row_start = rank * chunk_size
+        row_end = min(row_start + chunk_size, out_features)
+        return row_start, row_end, 0, in_features
+
+    chunk_size = (in_features + size - 1) // size
+    col_start = rank * chunk_size
+    col_end = min(col_start + chunk_size, in_features)
+    return 0, out_features, col_start, col_end
+
+
 def _shard_fp8_scale(
-    scale: torch.Tensor, split_dim: int, rank: int, size: int, block_size: int = 128
+    scale: torch.Tensor,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+    block_size: int = 128,
 ) -> torch.Tensor:
     """Shard scale tensor for tensor parallelism.
 
@@ -143,30 +165,20 @@ def _shard_fp8_scale(
 
     Args:
         scale: Scale tensor [out_features//block_size, in_features//block_size]
-        split_dim: Dimension to split (0 for output, 1 for input)
-        rank: TP rank
-        size: TP world size
+        row_start: Weight shard row start index
+        row_end: Weight shard row end index
+        col_start: Weight shard col start index
+        col_end: Weight shard col end index
         block_size: FP8 quantization block size (default: 128)
 
     Returns:
         Sharded scale tensor
     """
-    if size == 1:
-        return scale
-    if split_dim == 0:
-        # Shard along output dimension
-        scale_out = scale.shape[0]
-        chunk_size = (scale_out + size - 1) // size
-        start_idx = rank * chunk_size
-        end_idx = min(start_idx + chunk_size, scale_out)
-        return scale[start_idx:end_idx]
-    else:
-        # Shard along input dimension
-        scale_in = scale.shape[1]
-        chunk_size = (scale_in + size - 1) // size
-        start_idx = rank * chunk_size
-        end_idx = min(start_idx + chunk_size, scale_in)
-        return scale[:, start_idx:end_idx]
+    row_block_start = row_start // block_size
+    row_block_end = div_ceil(row_end, block_size)
+    col_block_start = col_start // block_size
+    col_block_end = div_ceil(col_end, block_size)
+    return scale[row_block_start:row_block_end, col_block_start:col_block_end]
 
 
 def _load_fp8_weights(
@@ -306,10 +318,18 @@ def _load_fp8_weights_without_dequant(
             elif name.endswith("lm_head") or name.endswith("embed_tokens"):
                 split_dim = 0
 
-            # Shard FP8 weight and scale
-            result[name] = _shard_fp8_weight(weight, split_dim, tp_rank, tp_size)
+            # Shard FP8 weight and scale with shared shard bounds
+            row_start, row_end, col_start, col_end = _get_fp8_shard_bounds(
+                weight.shape, split_dim, tp_rank, tp_size
+            )
+            result[name] = weight[row_start:row_end, col_start:col_end]
             result[scale_name] = _shard_fp8_scale(
-                scale, split_dim, tp_rank, tp_size, block_size[0]
+                scale,
+                row_start,
+                row_end,
+                col_start,
+                col_end,
+                block_size[0],
             )
         else:
             # Non-quantized weights (embeddings, norms)
