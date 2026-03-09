@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Tuple
 
 import torch
 
@@ -48,15 +48,19 @@ class Fp8DequantBuffer:
     FP8 dequantization buffer manager.
 
     Design decisions:
-    - Allocate independent buffer per CUDA Stream to avoid data races in multi-stream scenarios
+    - Allocate independent buffer per (CUDA device, CUDA Stream) to avoid cross-device
+      and cross-stream data races.
     - Lazy allocation on first use
     - Auto-expansion as needed
 
-    Note: minisglang uses single CUDA Stream (see engine/engine.py:38),
-    so singleton pattern is sufficient. This implementation is prepared for multi-stream scenarios.
+    Lifecycle / cleanup:
+    - Instances live in a process-global cache (`_instances`) for reuse across forwards.
+    - Memory is released by `clear_all()`, which is currently used by tests and can also be
+      called by upper-layer teardown hooks when unloading a model.
+    - If `clear_all()` is not called explicitly, cleanup still happens at process exit.
     """
 
-    _instances: Dict[int, "Fp8DequantBuffer"] = {}  # stream_id -> instance
+    _instances: Dict[Tuple[int, int], "Fp8DequantBuffer"] = {}  # (device_index, stream_id)
 
     def __init__(self, device: torch.device):
         self.device = device
@@ -65,19 +69,27 @@ class Fp8DequantBuffer:
 
     @classmethod
     def get_instance(cls, device: torch.device) -> "Fp8DequantBuffer":
-        """Get the buffer instance for the current CUDA Stream."""
-        stream = torch.cuda.current_stream()
-        stream_id = stream.cuda_stream
-        if stream_id not in cls._instances:
-            cls._instances[stream_id] = cls(device)
-        return cls._instances[stream_id]
+        """Get the buffer instance for the specified CUDA device and current stream."""
+        device = torch.device(device)
+        if device.type != "cuda":
+            raise ValueError(f"Fp8DequantBuffer only supports CUDA device, got {device}")
 
-    def get_buffer(self, shape: tuple[int, int]) -> torch.Tensor:
+        # Explicitly query stream on the requested device to avoid accidental cross-device reuse.
+        stream = torch.cuda.current_stream(device=device)
+        stream_id = int(stream.cuda_stream)
+        device_index = torch.cuda._utils._get_device_index(device, optional=False)
+        key = (device_index, stream_id)
+        if key not in cls._instances:
+            cls._instances[key] = cls(device)
+        return cls._instances[key]
+
+    def get_buffer(self, shape: tuple[int, int], device: torch.device) -> torch.Tensor:
         """
         Get a buffer of at least the specified size, expanding if necessary.
 
         Args:
             shape: (output_dim, input_dim)
+            device: Expected CUDA device for this request
 
         Returns:
             Pre-allocated BF16 buffer, size >= shape
@@ -94,6 +106,11 @@ class Fp8DequantBuffer:
             self._buffer = torch.empty(
                 self._max_shape, dtype=torch.bfloat16, device=self.device
             )
+        device = torch.device(device)
+        assert self._buffer is not None
+        assert self._buffer.device == device, (
+            f"Fp8DequantBuffer device mismatch: buffer={self._buffer.device}, request={device}"
+        )
         return self._buffer[: shape[0], : shape[1]]
 
     @classmethod
