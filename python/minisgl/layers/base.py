@@ -49,6 +49,11 @@ def _concat_prefix(prefix: str, name: str) -> str:
     return f"{prefix}.{name}" if prefix else name
 
 
+def _is_float8_dtype(dtype: torch.dtype) -> bool:
+    float8_names = ("float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2", "float8_e5m2fnuz")
+    return any(hasattr(torch, name) and dtype == getattr(torch, name) for name in float8_names)
+
+
 class BaseOP:
     @abstractmethod
     def forward(self, *args: Any, **kwargs: Any) -> Any: ...
@@ -75,6 +80,69 @@ class BaseOP:
     ) -> None:
         for name, param in self.__dict__.items():
             if name.startswith("_"):
+                continue
+
+            # FP8 weight loading: handle weight_fp8 and weight_scale
+            if name == "weight_fp8" and isinstance(param, torch.Tensor):
+                weight_key = _concat_prefix(prefix, "weight")
+                scale_key = f"{weight_key}_scale_inv"
+
+                has_weight = weight_key in state_dict
+                has_scale = scale_key in state_dict
+
+                if has_weight and not has_scale:
+                    raise ValueError(
+                        f"Missing FP8 scale tensor for '{prefix}': expected key '{scale_key}' "
+                        f"for weight key '{weight_key}'."
+                    )
+
+                if has_weight and has_scale:
+                    loaded_weight_fp8 = state_dict.pop(weight_key)
+                    loaded_weight_scale = state_dict.pop(scale_key)
+
+                    expected_weight_shape = tuple(self.weight_fp8.shape)
+                    expected_scale_shape = tuple(self.weight_scale.shape)
+                    actual_weight_shape = tuple(loaded_weight_fp8.shape)
+                    actual_scale_shape = tuple(loaded_weight_scale.shape)
+
+                    if not _is_float8_dtype(loaded_weight_fp8.dtype):
+                        raise ValueError(
+                            f"Invalid FP8 weight dtype at '{prefix}': expected float8 dtype, "
+                            f"got {loaded_weight_fp8.dtype}."
+                        )
+                    if loaded_weight_scale.dtype != torch.bfloat16:
+                        raise ValueError(
+                            f"Invalid FP8 scale dtype at '{prefix}': expected torch.bfloat16, "
+                            f"got {loaded_weight_scale.dtype}."
+                        )
+
+                    if actual_weight_shape != expected_weight_shape:
+                        raise ValueError(
+                            f"Invalid FP8 weight shape at '{prefix}': expected {expected_weight_shape}, "
+                            f"got {actual_weight_shape}."
+                        )
+
+                    expected_scale_from_block = (
+                        (actual_weight_shape[0] + 127) // 128,
+                        (actual_weight_shape[1] + 127) // 128,
+                    )
+
+                    if (
+                        actual_scale_shape != expected_scale_shape
+                        or actual_scale_shape != expected_scale_from_block
+                    ):
+                        raise ValueError(
+                            f"Invalid FP8 scale shape at '{prefix}': expected {expected_scale_shape} "
+                            f"(block-128 from weight -> {expected_scale_from_block}), "
+                            f"got {actual_scale_shape}."
+                        )
+
+                    self.weight_fp8 = loaded_weight_fp8
+                    self.weight_scale = loaded_weight_scale
+                    continue
+
+            # Skip weight_scale when it's part of FP8 (already loaded with weight_fp8)
+            if name == "weight_scale" and "weight_fp8" in self.__dict__:
                 continue
 
             if isinstance(param, torch.Tensor):

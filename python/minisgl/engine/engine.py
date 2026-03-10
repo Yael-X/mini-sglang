@@ -9,7 +9,7 @@ from minisgl.core import Batch, Context, Req, set_global_ctx
 from minisgl.distributed import destroy_distributed, enable_pynccl_distributed, set_tp_info
 from minisgl.kvcache import create_kvcache_pool
 from minisgl.layers import set_rope_device
-from minisgl.models import create_model, load_weight
+from minisgl.models import create_model, detect_quant_method, load_weight
 from minisgl.moe import create_moe_backend
 from minisgl.utils import div_even, init_logger, is_sm90_supported, is_sm100_supported, torch_dtype
 
@@ -18,6 +18,19 @@ from .graph import GraphRunner, get_free_memory, mem_GB
 from .sample import BatchSamplingArgs, Sampler
 
 logger = init_logger(__name__)
+
+def _resolve_fp8_keep_quantized(
+    model_path: str, requested_fp8_keep_quantized: bool
+) -> Tuple[bool, str | None]:
+    quant_method = detect_quant_method(model_path)
+    use_fp8 = requested_fp8_keep_quantized and quant_method == "fp8"
+    if requested_fp8_keep_quantized and quant_method != "fp8":
+        return (
+            False,
+            "--fp8-keep-quantized is only valid for FP8 models; "
+            f"detected quant_method={quant_method!r}. Falling back to dequantized loading.",
+        )
+    return use_fp8, None
 
 
 class ForwardOutput(NamedTuple):
@@ -46,10 +59,16 @@ class Engine:
         logger.info_rank0(f"Free memory before loading model: {mem_GB(init_free_memory)}")
 
         # ======================= Model initialization ========================
+        use_fp8, fp8_warning = _resolve_fp8_keep_quantized(
+            config.model_path, config.fp8_keep_quantized
+        )
+        if fp8_warning is not None:
+            logger.warning_rank0(fp8_warning)
+
         set_rope_device(self.device)
         with torch.device("meta"), torch_dtype(config.dtype):
-            self.model = create_model(config.model_config)
-        self.model.load_state_dict(self._load_weight_state_dict(config))
+            self.model = create_model(config.model_config, use_fp8=use_fp8)
+        self.model.load_state_dict(self._load_weight_state_dict(config, use_fp8))
 
         # ======================= KV cache initialization ========================
         self.num_pages = self._determine_num_pages(init_free_memory, config)
@@ -136,16 +155,26 @@ class Engine:
             assert tp_cpu_group is not None
         return tp_cpu_group
 
-    def _load_weight_state_dict(self, config: EngineConfig) -> Dict[str, torch.Tensor]:
+    def _load_weight_state_dict(
+        self, config: EngineConfig, use_fp8: bool
+    ) -> Dict[str, torch.Tensor]:
         if config.use_dummy_weight:
             return {
                 k: torch.randn_like(v, device=self.device)
                 for k, v in self.model.state_dict().items()
             }
         else:
-            return {
-                k: v.to(self.dtype) for k, v in load_weight(config.model_path, self.device).items()
-            }
+            # Don't convert FP8 weights to self.dtype - they should stay as FP8
+            result = {}
+            for k, v in load_weight(
+                config.model_path, self.device, use_fp8
+            ).items():
+                # Keep FP8 weights as-is, convert others to target dtype
+                if v.dtype == torch.float8_e4m3fn:
+                    result[k] = v
+                else:
+                    result[k] = v.to(self.dtype)
+            return result
 
     def _determine_num_pages(self, old_free_memory: int, config: EngineConfig) -> int:
         new_free_memory = self._sync_get_memory()[1]

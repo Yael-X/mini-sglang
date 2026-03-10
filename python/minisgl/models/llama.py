@@ -16,9 +16,9 @@ if TYPE_CHECKING:
 
 
 class LlamaDecoderLayer(BaseOP):
-    def __init__(self, config: ModelConfig, layer_id: int):
-        self.self_attn = LlamaAttn(config, layer_id)
-        self.mlp = LlamaMLP(config)
+    def __init__(self, config: ModelConfig, layer_id: int, use_fp8: bool = False):
+        self.self_attn = LlamaAttn(config, layer_id, use_fp8=use_fp8)
+        self.mlp = LlamaMLP(config, use_fp8=use_fp8)
         self.input_layernorm = RMSNormFused(
             size=config.hidden_size,
             eps=config.rms_norm_eps,
@@ -44,13 +44,13 @@ class LlamaDecoderLayer(BaseOP):
 
 
 class LlamaModel(BaseOP):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, use_fp8: bool = False):
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
         self.layers = OPList(
-            [LlamaDecoderLayer(config, layer_id) for layer_id in range(config.num_layers)]
+            [LlamaDecoderLayer(config, layer_id, use_fp8=use_fp8) for layer_id in range(config.num_layers)]
         )
         self.norm = RMSNormFused(
             size=config.hidden_size,
@@ -66,8 +66,8 @@ class LlamaModel(BaseOP):
 
 
 class LlamaForCausalLM(BaseLLMModel):
-    def __init__(self, config: ModelConfig):
-        self.model = LlamaModel(config)
+    def __init__(self, config: ModelConfig, use_fp8: bool = False):
+        self.model = LlamaModel(config, use_fp8=use_fp8)
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
