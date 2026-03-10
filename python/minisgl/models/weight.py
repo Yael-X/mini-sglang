@@ -12,26 +12,34 @@ from minisgl.distributed import get_tp_info, try_get_tp_info
 from minisgl.utils import div_ceil, download_hf_weight
 
 
-def _is_fp8_model(model_folder: str) -> bool:
-    """Check if the model is FP8 quantized by examining config.json."""
+def detect_quant_method(model_path: str) -> Optional[str]:
+    """Detect quantization method from ``config.json``.
+
+    Args:
+        model_path: HuggingFace model ID or local path.
+
+    Returns:
+        The value of ``quantization_config.quant_method`` if available,
+        otherwise ``None``.
+    """
+    model_folder = download_hf_weight(model_path)
     config_path = os.path.join(model_folder, "config.json")
     if not os.path.exists(config_path):
-        return False
+        return None
     with open(config_path) as f:
         config = json.load(f)
     quant_config = config.get("quantization_config", {})
-    return quant_config.get("quant_method") == "fp8"
+    return quant_config.get("quant_method")
+
+
+def _is_fp8_model(model_folder: str) -> bool:
+    """Check if the model is FP8 quantized by examining config.json."""
+    return detect_quant_method(model_folder) == "fp8"
 
 
 def _is_awq_model(model_folder: str) -> bool:
     """Check if the model is AWQ quantized by examining config.json."""
-    config_path = os.path.join(model_folder, "config.json")
-    if not os.path.exists(config_path):
-        return False
-    with open(config_path) as f:
-        config = json.load(f)
-    quant_config = config.get("quantization_config", {})
-    return quant_config.get("quant_method") == "awq"
+    return detect_quant_method(model_folder) == "awq"
 
 
 def _dequantize_fp8_block(
