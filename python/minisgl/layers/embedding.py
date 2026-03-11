@@ -95,6 +95,10 @@ class ParallelLMHead(VocabParallelEmbedding):
             del indices
 
         module = self.tied_embedding or self
+        # Ensure dtype match for FP8 models (weight is BF16 after dequant)
+        # Handle case where x might be FP16 due to FP8 dequant
+        if x.dtype == torch.float16:
+            x = x.to(torch.bfloat16)
         logits = F.linear(x, module.weight, self.bias)
         if self.tp_size == 1:
             return logits

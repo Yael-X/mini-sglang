@@ -24,8 +24,10 @@ class Qwen2DecoderLayer(BaseOP):
         use_fp8_input_quant: bool = False,
         fp8_input_scale_method: str = "per_tensor",
     ):
+        # Attention layers use FP8 weight dequant (for loading FP8 checkpoint)
+        # but NOT input quantization (RoPE requires BF16)
         self.self_attn = Qwen2Attn(
-            config, layer_id, has_qk_norm=False, has_attn_bias=True, use_fp8=use_fp8, use_fp8_input_quant=use_fp8_input_quant
+            config, layer_id, has_qk_norm=False, has_attn_bias=True, use_fp8=use_fp8, use_fp8_input_quant=False
         )
         self.mlp = Qwen2MLP(
             config,

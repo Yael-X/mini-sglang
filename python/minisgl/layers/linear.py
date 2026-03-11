@@ -74,7 +74,12 @@ class _Fp8LinearMixin:
             (self.weight_fp8.shape[0], self.weight_fp8.shape[1]), x.device
         )
         dequantize_fp8_block(self.weight_fp8, self.weight_scale, dequant_weight)
-        return F.linear(x, dequant_weight, self.bias)
+        # Dequant to BF16 for RoPE and KV cache compatibility
+        dequant_weight = dequant_weight.to(torch.bfloat16)
+        # Cast input to BF16 if needed
+        x_bf16 = x.to(torch.bfloat16)
+        out = F.linear(x_bf16, dequant_weight, self.bias)
+        return out
 
 
 class LinearReplicated(_LinearTPImpl):
