@@ -20,6 +20,7 @@ Mini-SGLang is a compact implementation of [SGLang](https://github.com/sgl-proje
   - **Overlap Scheduling**: Hides CPU scheduling overhead with GPU computation.
   - **Tensor Parallelism**: Scales inference across multiple GPUs.
   - **Optimized Kernels**: Integrates **FlashAttention** and **FlashInfer** for maximum efficiency.
+  - **FP8 Support**: Runs FP8 quantized models with optional input quantization for better throughput.
   - ...
 
 ## 🚀 Quick Start
@@ -135,6 +136,20 @@ python -m minisgl --model "Qwen/Qwen3-0.6B" --shell
 ![shell-example](https://lmsys.org/images/blog/minisgl/shell.png)
 
 You can also use `/reset` to clear the chat history.
+
+### 5. FP8 Quantized Models
+
+Run FP8 quantized models with memory efficiency and optional input quantization for better throughput.
+
+```bash
+# Run FP8 model with weight dequantization (saves ~50% weight memory)
+python -m minisgl --model "Qwen/Qwen3-8B-FP8" --fp8-keep-quantized
+
+# Enable FP8 input quantization for native FP8×FP8 Tensor Core GEMM
+python -m minisgl --model "Qwen/Qwen3-8B-FP8" --fp8-keep-quantized --fp8-input-quant
+```
+
+See [FP8 Input Quantization Guide](./docs/fp8_input_quantization_guide.md) for more details.
 
 ## Benchmark
 

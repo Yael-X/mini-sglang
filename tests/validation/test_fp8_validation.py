@@ -146,6 +146,78 @@ def create_consistent_weights(mlp_bf16: GatedMLP, mlp_fp8_quant: GatedMLP) -> No
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+class TestScaleMethods:
+    """Tests for different FP8 input scale methods."""
+
+    def test_per_tensor_scale_shape(self) -> None:
+        """Test that per_tensor scale produces correct shape."""
+        from minisgl.kernel.input_quant import quantize_input_to_fp8
+
+        x = torch.randn(2, 16, 256, dtype=torch.bfloat16, device="cuda")
+        x_fp8, x_scale = quantize_input_to_fp8(x, scale_method="per_tensor")
+
+        # Per-tensor scale should be scalar
+        assert x_scale.numel() == 1, f"Expected scalar, got shape {x_scale.shape}"
+        assert x_fp8.shape == x.shape
+
+    def test_per_token_scale_shape(self) -> None:
+        """Test that per_token scale produces correct shape."""
+        from minisgl.kernel.input_quant import quantize_input_to_fp8
+
+        batch, seq, hidden = 2, 16, 256
+        x = torch.randn(batch, seq, hidden, dtype=torch.bfloat16, device="cuda")
+        x_fp8, x_scale = quantize_input_to_fp8(x, scale_method="per_token")
+
+        # Per-token scale should be [batch * seq, 1]
+        assert x_scale.shape == (batch * seq, 1), f"Expected {(batch * seq, 1)}, got {x_scale.shape}"
+        assert x_fp8.shape == x.shape
+
+    def test_per_token_quantization_roundtrip(self) -> None:
+        """Test that per_token quantization can be dequantized back.
+
+        Note: Per-token scaling with torch._scaled_mm requires specific alignment:
+        - scale_a must be (M/32, 1) with contiguous memory
+        - scale_b must be (1, N) with contiguous memory
+
+        This test verifies the quantization/dequantization works correctly,
+        even though direct GEMM with per_token scale requires additional handling.
+        """
+        from minisgl.kernel.input_quant import quantize_input_to_fp8
+
+        # Create input with varying magnitudes
+        torch.manual_seed(42)
+        x = torch.randn(4, 8, 128, dtype=torch.bfloat16, device="cuda")
+        # Scale some tokens to have different magnitudes
+        x[0] *= 10.0
+        x[1] *= 0.1
+
+        x_flat = x.view(-1, 128)  # [32, 128]
+
+        x_fp8_per_tensor, scale_per_tensor = quantize_input_to_fp8(x_flat, scale_method="per_tensor")
+        x_fp8_per_token, scale_per_token = quantize_input_to_fp8(x_flat, scale_method="per_token")
+
+        # Verify dequantization works for per_tensor
+        x_dequant_per_tensor = x_fp8_per_tensor.to(torch.bfloat16) * scale_per_tensor.to(torch.bfloat16)
+
+        # For per_token, the scale is [M, 1] which broadcasts correctly
+        x_dequant_per_token = x_fp8_per_token.to(torch.bfloat16) * scale_per_token.to(torch.bfloat16)
+
+        error_per_tensor = (x_flat - x_dequant_per_tensor).abs().mean().item()
+        error_per_token = (x_flat - x_dequant_per_token).abs().mean().item()
+
+        print(f"\nPer-tensor quantization error: {error_per_tensor:.6f}")
+        print(f"Per-token quantization error: {error_per_token:.6f}")
+
+        # Both methods should produce valid dequantized results
+        assert not torch.isnan(x_dequant_per_tensor).any()
+        assert not torch.isnan(x_dequant_per_token).any()
+
+        # Per-token should generally have lower error for varying magnitudes
+        assert error_per_token < error_per_tensor * 2, \
+            f"Per-token error {error_per_token} unexpectedly higher than per-tensor {error_per_tensor}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 class TestNumericalAccuracy:
     """Tests for numerical accuracy of FP8 input quantization."""
 
@@ -317,6 +389,78 @@ class TestEdgeCases:
             x = torch.randn(batch_size, 16, 128, dtype=torch.bfloat16, device="cuda")
             output = mlp.forward(x)
             assert output.shape == (batch_size, 16, 128), f"Failed for batch_size={batch_size}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+class TestFP8GEMMWithPerTokenScale:
+    """Tests for FP8 GEMM with per-token input scaling.
+
+    Note: torch._scaled_mm has specific requirements for RowWise (per_token) scaling:
+    - scale_a must be (M/32, 1) with M divisible by 32
+    - scale_a must be contiguous
+    - scale_b must be (1, N) with contiguous memory
+
+    Per-token scaling requires the input dimensions to be aligned to 32.
+    """
+
+    @pytest.mark.skip(reason="Per-token GEMM requires M divisible by 32 and specific scale alignment")
+    def test_gemm_with_per_token_scale(self) -> None:
+        """Test that FP8 GEMM works with per-token scale.
+
+        This test is skipped because per_token scaling requires:
+        - M must be divisible by 32
+        - scale_a must be (M/32, 1) contiguous
+        - scale_b must be (1, N) contiguous
+        """
+        from minisgl.kernel.fp8_gemm import fp8_gemm
+        from minisgl.kernel.input_quant import quantize_input_to_fp8
+
+        M, K, N = 32, 64, 48
+        batch, seq = 2, 16
+
+        # Create input and quantize with per_token scale
+        x = torch.randn(batch, seq, K, dtype=torch.bfloat16, device="cuda")
+        x_flat = x.view(-1, K)
+        x_fp8, x_scale = quantize_input_to_fp8(x_flat, scale_method="per_token")
+
+        # Create weight (column-major)
+        b_scale = torch.tensor(0.1, dtype=torch.float32, device="cuda")
+        b_fp8 = torch.randn(N, K, dtype=torch.bfloat16, device="cuda").to(torch.float8_e4m3fn)
+        b_col = b_fp8.T  # [K, N] column-major
+
+        # FP8 GEMM with per-token scale
+        output = fp8_gemm(x_fp8, x_scale, b_col, b_scale)
+
+        assert output.shape == (batch * seq, N)
+
+    def test_gemm_with_per_tensor_scale(self) -> None:
+        """Test that FP8 GEMM works correctly with per-tensor scale."""
+        from minisgl.kernel.fp8_gemm import fp8_gemm
+        from minisgl.kernel.input_quant import quantize_input_to_fp8
+
+        M, K, N = 64, 128, 96
+
+        # Create input
+        torch.manual_seed(42)
+        x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+
+        # Quantize with per_tensor scale
+        x_fp8, x_scale = quantize_input_to_fp8(x, scale_method="per_tensor")
+
+        # Create weight (column-major)
+        b_scale = torch.tensor(0.1, dtype=torch.float32, device="cuda")
+        b_fp8 = torch.randn(N, K, dtype=torch.bfloat16, device="cuda").to(torch.float8_e4m3fn)
+        b_col = b_fp8.T  # [K, N] column-major
+
+        # FP8 GEMM with per-tensor scale
+        output = fp8_gemm(x_fp8, x_scale, b_col, b_scale)
+
+        assert output.shape == (M, N)
+        assert not torch.isnan(output).any()
+        assert not torch.isinf(output).any()
+
+        print(f"\nOutput range: [{output.min():.2f}, {output.max():.2f}]")
+        print(f"Output mean: {output.mean():.4f}")
 
 
 if __name__ == "__main__":

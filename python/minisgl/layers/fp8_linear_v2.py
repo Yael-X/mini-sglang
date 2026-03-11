@@ -215,7 +215,7 @@ class Fp8GatedMLPWithInputQuant(BaseOP):
         has_bias: bool = False,
         input_scale_method: str = "per_tensor",
     ):
-        from minisgl.layers import silu_and_mul, gelu_and_mul
+        from minisgl.layers import gelu_and_mul, silu_and_mul
 
         self.gate_up_proj = Fp8LinearColParallelMergedV2(
             input_size=hidden_size,

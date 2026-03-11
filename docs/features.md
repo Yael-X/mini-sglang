@@ -57,3 +57,37 @@ To further reduce CPU overhead, Mini-SGLang employs overlap scheduling, a techni
 
 ![overlap](https://lmsys.org/images/blog/sglang_v0_4/scheduler.jpg)
 *Illustration of Overlap Scheduling from [LMSYS Blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/).*
+
+## FP8 Quantization Support
+
+Mini-SGLang supports running FP8 quantized models (e.g., Qwen3-8B-FP8) with two modes:
+
+### FP8 Weight Dequantization
+
+Keeps FP8 weights in quantized format and dequantizes on-the-fly during inference:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-8B-FP8" --fp8-keep-quantized
+```
+
+**Benefits**:
+- ~50% weight memory reduction (8GB vs 16GB for 8B model)
+- More space for KV cache
+- Enables large models on smaller GPUs
+
+### FP8 Input Quantization
+
+Enables native FP8×FP8 Tensor Core GEMM for better throughput:
+
+```bash
+python -m minisgl --model "Qwen/Qwen3-8B-FP8" \
+    --fp8-keep-quantized \
+    --fp8-input-quant
+```
+
+**Benefits**:
+- All benefits of FP8 weight dequantization
+- Faster inference via FP8 Tensor Core utilization
+- Better throughput for multi-sequence inference
+
+For detailed usage and limitations, see the [FP8 Input Quantization Guide](./fp8_input_quantization_guide.md).

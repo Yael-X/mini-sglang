@@ -187,8 +187,6 @@ def prepare_fp8_gemm_input(
             - x_fp8: FP8 tensor [M, K] in row-major layout
             - x_scale: Scale tensor [M, 1] or scalar
     """
-    original_shape = x.shape
-
     # Flatten to 2D if needed
     if x.dim() > 2:
         x = x.view(-1, x.shape[-1])
