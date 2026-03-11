@@ -6,9 +6,11 @@ from minisgl.layers import (
     AttentionLayer,
     BaseOP,
     Fp8LinearColParallelMerged,
+    Fp8LinearColParallelMergedV2,
     Fp8LinearOProj,
     Fp8LinearQKVMerged,
     Fp8LinearRowParallel,
+    Fp8LinearRowParallelV2,
     LinearColParallelMerged,
     LinearOProj,
     LinearQKVMerged,
@@ -27,14 +29,40 @@ if TYPE_CHECKING:
 
 
 class GatedMLP(BaseOP):
-    def __init__(self, config: ModelConfig, use_fp8: bool = False):
-        if use_fp8:
+    """Gated MLP with optional FP8 support.
+
+    Args:
+        config: Model configuration
+        use_fp8: If True, use FP8 weights with weight dequantization
+        use_fp8_input_quant: If True, use FP8 input quantization (requires use_fp8=True)
+    """
+
+    def __init__(
+        self,
+        config: ModelConfig,
+        use_fp8: bool = False,
+        use_fp8_input_quant: bool = False,
+        fp8_input_scale_method: str = "per_tensor",
+    ):
+        self.use_fp8_input_quant = use_fp8_input_quant
+
+        if use_fp8_input_quant:
+            # New FP8 Input Quantization mode (V2 layers)
+            self.gate_up_proj = Fp8LinearColParallelMergedV2(
+                config.hidden_size,
+                [config.intermediate_size, config.intermediate_size],
+                has_bias=False,
+                input_scale_method=fp8_input_scale_method,
+            )
+        elif use_fp8:
+            # Existing FP8 weight dequantization mode
             self.gate_up_proj = Fp8LinearColParallelMerged(
                 config.hidden_size,
                 [config.intermediate_size, config.intermediate_size],
                 has_bias=False,
             )
         else:
+            # BF16 mode
             self.gate_up_proj = LinearColParallelMerged(
                 config.hidden_size,
                 [config.intermediate_size, config.intermediate_size],
@@ -47,13 +75,23 @@ class GatedMLP(BaseOP):
             raise ValueError(f"Unsupported activation function: {config.hidden_act}")
         self.act_fn = act_fn
 
-        if use_fp8:
+        if use_fp8_input_quant:
+            # New FP8 Input Quantization mode (V2 layers)
+            self.down_proj = Fp8LinearRowParallelV2(
+                config.intermediate_size,
+                config.hidden_size,
+                has_bias=False,
+                input_scale_method=fp8_input_scale_method,
+            )
+        elif use_fp8:
+            # Existing FP8 weight dequantization mode
             self.down_proj = Fp8LinearRowParallel(
                 config.intermediate_size,
                 config.hidden_size,
                 has_bias=False,
             )
         else:
+            # BF16 mode
             self.down_proj = LinearRowParallel(
                 config.intermediate_size,
                 config.hidden_size,
@@ -98,6 +136,12 @@ class MoEMLP(BaseOP):
 
 
 class RopeAttn(BaseOP):
+    """Attention with RoPE.
+
+    Note: QKV projection stays in BF16 for RoPE compatibility.
+    FP8 input quantization is only applied to MLP layers.
+    """
+
     def __init__(
         self,
         config: ModelConfig,
@@ -106,8 +150,11 @@ class RopeAttn(BaseOP):
         has_attn_bias: bool = False,
         has_qk_norm: bool = False,
         use_fp8: bool = False,
+        use_fp8_input_quant: bool = False,  # Not used for attention, kept for API consistency
     ):
         head_dim = config.head_dim
+        # QKV projection: use FP8 weight dequantization if use_fp8, but NOT input quantization
+        # This is because RoPE requires BF16 precision
         if use_fp8:
             self.qkv_proj = Fp8LinearQKVMerged(
                 hidden_size=config.hidden_size,
@@ -140,6 +187,7 @@ class RopeAttn(BaseOP):
             q_norm=self.q_norm,
             k_norm=self.k_norm,
         )
+        # O projection: use FP8 weight dequantization if use_fp8
         if use_fp8:
             self.o_proj = Fp8LinearOProj(
                 head_dim * config.num_qo_heads,

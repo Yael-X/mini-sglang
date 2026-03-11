@@ -233,6 +233,28 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         "Useful for running FP8 models on GPUs with limited VRAM.",
     )
 
+    parser.add_argument(
+        "--fp8-input-quant",
+        action="store_true",
+        dest="use_fp8_input_quant",
+        help="Use FP8 input quantization for MLP layers. "
+        "Requires --fp8-keep-quantized. "
+        "Enables native FP8×FP8 Tensor Core GEMM for better performance. "
+        "Attention layers still use BF16 for RoPE compatibility.",
+    )
+
+    parser.add_argument(
+        "--fp8-scale-method",
+        type=str,
+        default="per_tensor",
+        choices=["per_tensor", "per_token"],
+        dest="fp8_input_scale_method",
+        help="FP8 input quantization scale method. "
+        "per_tensor: single scale for entire tensor (faster). "
+        "per_token: per-token scale (more precise). "
+        "Default: per_tensor.",
+    )
+
     # Parse arguments
     kwargs = parser.parse_args(args).__dict__.copy()
 

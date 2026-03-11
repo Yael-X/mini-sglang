@@ -19,18 +19,42 @@ from .sample import BatchSamplingArgs, Sampler
 
 logger = init_logger(__name__)
 
-def _resolve_fp8_keep_quantized(
-    model_path: str, requested_fp8_keep_quantized: bool
-) -> Tuple[bool, str | None]:
+
+def _resolve_fp8_mode(
+    model_path: str,
+    requested_fp8_keep_quantized: bool,
+    requested_use_fp8_input_quant: bool,
+) -> Tuple[bool, bool, str | None]:
+    """Resolve FP8 mode settings.
+
+    Returns:
+        Tuple of (use_fp8, use_fp8_input_quant, warning_message)
+    """
     quant_method = detect_quant_method(model_path)
-    use_fp8 = requested_fp8_keep_quantized and quant_method == "fp8"
-    if requested_fp8_keep_quantized and quant_method != "fp8":
+    is_fp8_model = quant_method == "fp8"
+
+    # use_fp8_input_quant requires fp8_keep_quantized
+    if requested_use_fp8_input_quant and not requested_fp8_keep_quantized:
         return (
             False,
-            "--fp8-keep-quantized is only valid for FP8 models; "
+            False,
+            "--fp8-input-quant requires --fp8-keep-quantized. "
+            "Falling back to BF16 mode.",
+        )
+
+    # fp8_keep_quantized only works for FP8 models
+    if requested_fp8_keep_quantized and not is_fp8_model:
+        return (
+            False,
+            False,
+            f"--fp8-keep-quantized is only valid for FP8 models; "
             f"detected quant_method={quant_method!r}. Falling back to dequantized loading.",
         )
-    return use_fp8, None
+
+    use_fp8 = requested_fp8_keep_quantized and is_fp8_model
+    use_fp8_input_quant = requested_use_fp8_input_quant and use_fp8
+
+    return use_fp8, use_fp8_input_quant, None
 
 
 class ForwardOutput(NamedTuple):
@@ -59,15 +83,29 @@ class Engine:
         logger.info_rank0(f"Free memory before loading model: {mem_GB(init_free_memory)}")
 
         # ======================= Model initialization ========================
-        use_fp8, fp8_warning = _resolve_fp8_keep_quantized(
-            config.model_path, config.fp8_keep_quantized
+        use_fp8, use_fp8_input_quant, fp8_warning = _resolve_fp8_mode(
+            config.model_path,
+            config.fp8_keep_quantized,
+            config.use_fp8_input_quant,
         )
         if fp8_warning is not None:
             logger.warning_rank0(fp8_warning)
 
+        if use_fp8_input_quant:
+            logger.info_rank0(
+                f"Using FP8 input quantization with scale method: {config.fp8_input_scale_method}"
+            )
+        elif use_fp8:
+            logger.info_rank0("Using FP8 weight dequantization mode")
+
         set_rope_device(self.device)
         with torch.device("meta"), torch_dtype(config.dtype):
-            self.model = create_model(config.model_config, use_fp8=use_fp8)
+            self.model = create_model(
+                config.model_config,
+                use_fp8=use_fp8,
+                use_fp8_input_quant=use_fp8_input_quant,
+                fp8_input_scale_method=config.fp8_input_scale_method,
+            )
         self.model.load_state_dict(self._load_weight_state_dict(config, use_fp8))
 
         # ======================= KV cache initialization ========================

@@ -30,6 +30,8 @@ class EngineConfig:
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
     fp8_keep_quantized: bool = False  # Keep FP8 weights in quantized format for memory efficiency
+    use_fp8_input_quant: bool = False  # Use FP8 input quantization (requires fp8_keep_quantized=True)
+    fp8_input_scale_method: str = "per_tensor"  # FP8 input scale method: "per_tensor" or "per_token"
 
     @cached_property
     def hf_config(self):

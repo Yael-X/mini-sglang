@@ -10,13 +10,24 @@ _MODEL_REGISTRY = {
 }
 
 
-def get_model_class(model_architecture: str, model_config: ModelConfig, use_fp8: bool = False):
+def get_model_class(
+    model_architecture: str,
+    model_config: ModelConfig,
+    use_fp8: bool = False,
+    use_fp8_input_quant: bool = False,
+    fp8_input_scale_method: str = "per_tensor",
+):
     if model_architecture not in _MODEL_REGISTRY:
         raise ValueError(f"Model architecture {model_architecture} not supported")
     module_path, class_name = _MODEL_REGISTRY[model_architecture]
     module = importlib.import_module(module_path, package=__package__)
     model_cls = getattr(module, class_name)
-    return model_cls(model_config, use_fp8)
+    return model_cls(
+        model_config,
+        use_fp8=use_fp8,
+        use_fp8_input_quant=use_fp8_input_quant,
+        fp8_input_scale_method=fp8_input_scale_method,
+    )
 
 
 __all__ = ["get_model_class"]

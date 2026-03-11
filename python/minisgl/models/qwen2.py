@@ -16,9 +16,23 @@ if TYPE_CHECKING:
 
 
 class Qwen2DecoderLayer(BaseOP):
-    def __init__(self, config: ModelConfig, layer_id: int, use_fp8: bool = False):
-        self.self_attn = Qwen2Attn(config, layer_id, has_qk_norm=False, has_attn_bias=True, use_fp8=use_fp8)
-        self.mlp = Qwen2MLP(config, use_fp8=use_fp8)
+    def __init__(
+        self,
+        config: ModelConfig,
+        layer_id: int,
+        use_fp8: bool = False,
+        use_fp8_input_quant: bool = False,
+        fp8_input_scale_method: str = "per_tensor",
+    ):
+        self.self_attn = Qwen2Attn(
+            config, layer_id, has_qk_norm=False, has_attn_bias=True, use_fp8=use_fp8, use_fp8_input_quant=use_fp8_input_quant
+        )
+        self.mlp = Qwen2MLP(
+            config,
+            use_fp8=use_fp8,
+            use_fp8_input_quant=use_fp8_input_quant,
+            fp8_input_scale_method=fp8_input_scale_method,
+        )
         self.input_layernorm = RMSNormFused(
             size=config.hidden_size,
             eps=config.rms_norm_eps,
@@ -42,13 +56,28 @@ class Qwen2DecoderLayer(BaseOP):
 
 
 class Qwen2Model(BaseOP):
-    def __init__(self, config: ModelConfig, use_fp8: bool = False):
+    def __init__(
+        self,
+        config: ModelConfig,
+        use_fp8: bool = False,
+        use_fp8_input_quant: bool = False,
+        fp8_input_scale_method: str = "per_tensor",
+    ):
         self.embed_tokens = VocabParallelEmbedding(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,
         )
         self.layers = OPList(
-            [Qwen2DecoderLayer(config, layer_id, use_fp8=use_fp8) for layer_id in range(config.num_layers)]
+            [
+                Qwen2DecoderLayer(
+                    config,
+                    layer_id,
+                    use_fp8=use_fp8,
+                    use_fp8_input_quant=use_fp8_input_quant,
+                    fp8_input_scale_method=fp8_input_scale_method,
+                )
+                for layer_id in range(config.num_layers)
+            ]
         )
         self.norm = RMSNormFused(
             size=config.hidden_size,
@@ -64,8 +93,19 @@ class Qwen2Model(BaseOP):
 
 
 class Qwen2ForCausalLM(BaseLLMModel):
-    def __init__(self, config: ModelConfig, use_fp8: bool = False):
-        self.model = Qwen2Model(config, use_fp8=use_fp8)
+    def __init__(
+        self,
+        config: ModelConfig,
+        use_fp8: bool = False,
+        use_fp8_input_quant: bool = False,
+        fp8_input_scale_method: str = "per_tensor",
+    ):
+        self.model = Qwen2Model(
+            config,
+            use_fp8=use_fp8,
+            use_fp8_input_quant=use_fp8_input_quant,
+            fp8_input_scale_method=fp8_input_scale_method,
+        )
         self.lm_head = ParallelLMHead(
             num_embeddings=config.vocab_size,
             embedding_dim=config.hidden_size,

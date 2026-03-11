@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from minisgl.engine.engine import Engine, _resolve_fp8_keep_quantized
+from minisgl.engine.engine import Engine, _resolve_fp8_mode
 from minisgl.models.weight import detect_quant_method
 
 
@@ -19,17 +19,27 @@ def test_detect_quant_method_reads_config(tmp_path):
 def test_bf16_model_with_keep_quantized_flag_is_downgraded(monkeypatch):
     monkeypatch.setattr("minisgl.engine.engine.detect_quant_method", lambda _: None)
 
-    use_fp8, warning = _resolve_fp8_keep_quantized("dummy-model", requested_fp8_keep_quantized=True)
+    use_fp8, use_fp8_input_quant, warning = _resolve_fp8_mode(
+        "dummy-model",
+        requested_fp8_keep_quantized=True,
+        requested_use_fp8_input_quant=False,
+    )
 
     assert use_fp8 is False
+    assert use_fp8_input_quant is False
     assert warning is not None
     assert "only valid for FP8 models" in warning
 
 
 def test_fp8_model_without_flag_uses_dequantized_loading(monkeypatch):
     monkeypatch.setattr("minisgl.engine.engine.detect_quant_method", lambda _: "fp8")
-    use_fp8, warning = _resolve_fp8_keep_quantized("dummy-model", requested_fp8_keep_quantized=False)
+    use_fp8, use_fp8_input_quant, warning = _resolve_fp8_mode(
+        "dummy-model",
+        requested_fp8_keep_quantized=False,
+        requested_use_fp8_input_quant=False,
+    )
     assert use_fp8 is False
+    assert use_fp8_input_quant is False
     assert warning is None
 
     calls = []
@@ -49,3 +59,34 @@ def test_fp8_model_without_flag_uses_dequantized_loading(monkeypatch):
 
     assert calls == [("dummy-model", torch.device("cpu"), False)]
     assert state_dict["w"].dtype == torch.bfloat16
+
+
+def test_fp8_input_quant_requires_keep_quantized(monkeypatch):
+    """Test that --fp8-input-quant requires --fp8-keep-quantized."""
+    monkeypatch.setattr("minisgl.engine.engine.detect_quant_method", lambda _: "fp8")
+
+    use_fp8, use_fp8_input_quant, warning = _resolve_fp8_mode(
+        "dummy-model",
+        requested_fp8_keep_quantized=False,
+        requested_use_fp8_input_quant=True,
+    )
+
+    assert use_fp8 is False
+    assert use_fp8_input_quant is False
+    assert warning is not None
+    assert "requires --fp8-keep-quantized" in warning
+
+
+def test_fp8_input_quant_enabled(monkeypatch):
+    """Test that FP8 input quantization is enabled correctly."""
+    monkeypatch.setattr("minisgl.engine.engine.detect_quant_method", lambda _: "fp8")
+
+    use_fp8, use_fp8_input_quant, warning = _resolve_fp8_mode(
+        "dummy-model",
+        requested_fp8_keep_quantized=True,
+        requested_use_fp8_input_quant=True,
+    )
+
+    assert use_fp8 is True
+    assert use_fp8_input_quant is True
+    assert warning is None
